@@ -1,0 +1,121 @@
+import os
+import cv2
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+
+IMAGE_SIZE = 128
+BATCH_SIZE = 8
+EPOCHS = 10
+LR = 0.001
+DATASET_PATH = ""
+MODEL_PATH = "portfolio"
+
+class DenoiseDataset(Dataset):
+    def __init__(self, folder):
+        self.images = [os.path.join(folder, f) for f in os.listdir(folder)]
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img = cv2.imread(self.images[idx])
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE))
+        img = img / 255.0
+
+        noise = np.random.normal(0, 0.1, img.shape)
+        noisy_img = np.clip(img + noise, 0, 1)
+
+        img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)
+        noisy_img = torch.tensor(noisy_img, dtype=torch.float32).permute(2, 0, 1)
+
+        return noisy_img, img
+
+class DenoiseCNN(nn.Module):
+    def __init__(self):
+        super(DenoiseCNN, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.ReLU()
+        )
+        self.decoder = nn.Sequential(
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 3, 3, padding=1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
+
+def train():
+    dataset = DenoiseDataset(DATASET_PATH)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+    model = DenoiseCNN()
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+
+    print("Training started...")
+    for epoch in range(EPOCHS):
+        total_loss = 0
+        for noisy, clean in loader:
+            output = model(noisy)
+            loss = criterion(output, clean)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {total_loss/len(loader):.4f}")
+
+    torch.save(model.state_dict(), MODEL_PATH)
+    print("Model saved:", MODEL_PATH)
+
+def test(image_path):
+    model = DenoiseCNN()
+    model.load_state_dict(torch.load(MODEL_PATH))
+    model.eval()
+
+    img = cv2.imread(image_path)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE))
+    img = img / 255.0
+
+    noise = np.random.normal(0, 0.1, img.shape)
+    noisy = np.clip(img + noise, 0, 1)
+
+    inp = torch.tensor(noisy).permute(2, 0, 1).unsqueeze(0).float()
+    out = model(inp).squeeze().permute(1, 2, 0).detach().numpy()
+
+    plt.figure(figsize=(12, 4))
+    plt.subplot(1, 3, 1)
+    plt.title("Noisy Image")
+    plt.imshow(noisy)
+    plt.axis("off")
+
+    plt.subplot(1, 3, 2)
+    plt.title("Restored Image")
+    plt.imshow(out)
+    plt.axis("off")
+
+    plt.subplot(1, 3, 3)
+    plt.title("Original Image")
+    plt.imshow(img)
+    plt.axis("off")
+
+    plt.show()
+
+if __name__ == "__main__":
+    train()
+    test("test.jpg")
+
